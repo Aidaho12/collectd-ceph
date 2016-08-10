@@ -60,12 +60,22 @@ class CephPoolPlugin(base.Base):
                     % (exc, traceback.format_exc()))
             return
 
+        stats_cluster_output = None
+        try:
+            cluster_cmdline = 'ceph status -f json --cluster ' + self.cluster
+            stats_cluster_output = subprocess.check_output(cluster_cmdline, shell=True)
+        except Exception as exc:
+            collectd.error("ceph-pool: failed to ceph CLUSTER stats :: %s :: %s"
+                    % (exc, traceback.format_exc()))
+            return
+
         if stats_output is None:
             collectd.error('ceph-pool: failed to ceph osd pool stats :: output was None')
 
         if df_output is None:
             collectd.error('ceph-pool: failed to ceph df :: output was None')
-
+        
+        json_stats_cluster_data = json.loads(stats_cluster_output)
         json_stats_data = json.loads(stats_output)
         json_df_data = json.loads(df_output)
 
@@ -76,6 +86,19 @@ class CephPoolPlugin(base.Base):
             pool_data = data[ceph_cluster][pool_key] 
             for stat in ('read_bytes_sec', 'write_bytes_sec', 'op_per_sec'):
                 pool_data[stat] = pool['client_io_rate'][stat] if pool['client_io_rate'].has_key(stat) else 0
+
+        #push cluster stats results
+        data[ceph_cluster]['cluster'] = {}
+        if json_stats_cluster_data['health'].has_key('health'):
+            data[ceph_cluster]['cluster']['total_iop'] = int(json_stats_cluster_data['pgmap']['op_per_sec'])
+
+            if json_stats_cluster_data['pgmap'].has_key('read_bytes_sec'):
+                 data[ceph_cluster]['cluster']['read_bytes_sec'] = int(json_stats_cluster_data['pgmap']['read_bytes_sec'])
+
+            data[ceph_cluster]['cluster']['write_bytes_sec'] = int(json_stats_cluster_data['pgmap']['write_bytes_sec'])
+            data[ceph_cluster]['cluster']['health'] = len(json_stats_cluster_data['health']['overall_status'])
+ 
+        return data
 
         # push df results
         for pool in json_df_data['pools']:
@@ -107,11 +130,12 @@ except Exception as exc:
 def configure_callback(conf):
     """Received configuration information"""
     plugin.config_callback(conf)
+    collectd.register_read(read_callback, plugin.interval)
 
 def read_callback():
     """Callback triggerred by collectd on read"""
     plugin.read_callback()
 
 collectd.register_config(configure_callback)
-collectd.register_read(read_callback, plugin.interval)
+
 
